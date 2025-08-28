@@ -1,0 +1,67 @@
+/* assets/admin.css */
+
+.hass-widgets-card {
+    background: #fff;
+    border: 1px solid #ccd0d4;
+    box-shadow: 0 1px 1px rgba(0, 0, 0, 0.04);
+    margin-bottom: 20px;
+    padding: 20px;
+}
+
+.hass-widgets-card h2 {
+    margin-top: 0;
+}
+
+.hass-test-connection {
+    cursor: pointer;
+    color: #2271b1;
+}
+
+.hass-test-connection.loading {
+    animation: spin 2s infinite linear;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.connection-status.connected {
+    color: #46b450;
+}
+
+.connection-status.error {
+    color: #dc3232;
+}
+
+.item-value .dashicons {
+    color: #72777c;
+}
+
+.button-danger {
+    color: #dc3232;
+    border-color: #dc3232;
+}
+
+.button-danger:hover {
+    color: #fff;
+    background: #dc3232;
+    border-color: #dc3232;
+}
+
+.hass-notice {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: #46b450;
+    color: #fff;
+    padding: 10px 20px;
+    border-radius: 5px;
+    display: none;
+    z-index: 9999;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+}
+.hass-notice.error {
+    background: #dc3232;
+}
+
