@@ -142,18 +142,26 @@ jQuery(document).ready(function($) {
         });
     });
 
+// In widgets-add.php - keep this version and improve it:
 $('#insert-item-btn').on('click', function(){
     var itemId = $('#hass-item-dropdown').val();
     if(!itemId) return;
     var shortcode = '[hass_item id="' + itemId + '"]';
-    if (tinymce.get('widget_template')) {
-        tinymce.get('widget_template').execCommand('mceInsertContent', false, shortcode);
+    
+    if (typeof tinymce !== 'undefined' && tinymce.get('widget_template')) {
+        var editor = tinymce.get('widget_template');
+        editor.insertContent(shortcode);
     } else {
         var textarea = $('#widget_template');
         var start = textarea[0].selectionStart;
         var end = textarea[0].selectionEnd;
         var val = textarea.val();
-        textarea.val(val.substring(0,start) + shortcode + val.substring(end));
+        textarea.val(val.substring(0, start) + shortcode + val.substring(end));
+        
+        // Set cursor position after inserted content
+        textarea[0].selectionStart = start + shortcode.length;
+        textarea[0].selectionEnd = start + shortcode.length;
+        textarea.focus();
     }
 });
 

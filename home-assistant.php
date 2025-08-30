@@ -18,12 +18,12 @@ require_once plugin_dir_path(__FILE__) . 'includes/widget-class.php';
 class HomeAssistantPlugin {
 
     public function __construct() {
+        register_deactivation_hook(__FILE__, [$this, 'deactivate']);
         // Admin menu
         add_action('admin_menu', [$this, 'register_menus']);
 
         // Admin assets
         add_action('admin_enqueue_scripts', [$this, 'enqueue_assets']);
-
         // Shortcodes
         add_shortcode('hass_widget', [$this, 'shortcode_widget']);
         add_shortcode('hass_item', [$this, 'shortcode_item']);
@@ -43,11 +43,23 @@ class HomeAssistantPlugin {
             register_widget('HASS_Widget');
         });
 
-        // Shortcodes
-        add_shortcode('hass_widget', [$this, 'shortcode_widget']);
-        add_shortcode('hass_item', [$this, 'shortcode_item']);
-        add_shortcode('hass_if', [$this, 'shortcode_hass_if']);
+// Add this with your other AJAX actions in the constructor
+add_action('wp_ajax_hass_test_connection', [$this, 'ajax_test_connection']);
+}
+// Add this method with your other AJAX methods
+public function ajax_test_connection() {
+    check_ajax_referer('hass_widgets_nonce', 'nonce');
+    if (!current_user_can('manage_options')) wp_send_json_error('Permission denied');
+
+    $server_id = sanitize_text_field($_POST['server_id']);
+    $result = HASS_Admin_Settings::test_connection($server_id);
+
+    if (is_wp_error($result)) {
+        wp_send_json_error($result->get_error_message());
+    } else {
+        wp_send_json_success();
     }
+}
     // ==== Admin Pages ====
     public function register_menus() {
         add_menu_page(
@@ -74,6 +86,28 @@ class HomeAssistantPlugin {
             'nonce'   => wp_create_nonce('hass_widgets_nonce')
         ]);
     }
+    public static function cleanup_plugin_data() {
+        // Remove all plugin options
+        delete_option('hass_widgets_servers');
+        delete_option('hass_widgets_items');
+        delete_option('hass_widgets_widgets');
+        
+        // Remove any transients created by the plugin
+        global $wpdb;
+        $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE '_transient_hass_item_%'");
+        $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE '_transient_timeout_hass_item_%'");
+        
+        // Remove any scheduled events
+        wp_clear_scheduled_hook('hass_refresh_items_event');
+        
+        // Optional: Remove any custom database tables if you created them
+        // $wpdb->query("DROP TABLE IF EXISTS {$wpdb->prefix}hass_custom_table");
+    }
+
+public static function deactivate() {
+    // Remove all plugin data on deactivation
+    self::cleanup_plugin_data();
+}
 
     // ==== Pages ====
     public function render_widgets_page() {
@@ -129,20 +163,33 @@ class HomeAssistantPlugin {
         wp_send_json_success(['id' => $id]);
     }
 
-    public function ajax_add_item() {
-        check_ajax_referer('hass_widgets_nonce', 'nonce');
-        if (!current_user_can('manage_options')) wp_send_json_error('Permission denied');
+public function ajax_add_item() {
+    check_ajax_referer('hass_widgets_nonce', 'nonce');
+    if (!current_user_can('manage_options')) wp_send_json_error('Permission denied');
 
-        $items = get_option('hass_widgets_items', []);
-        $id = sanitize_key($_POST['id']);
-        $items[$id] = [
-            'server'    => sanitize_text_field($_POST['server']),
-            'entity'    => sanitize_text_field($_POST['entity']),
-            'attribute' => sanitize_text_field($_POST['attribute'])
-        ];
-        update_option('hass_widgets_items', $items);
-        wp_send_json_success(['id'=>$id]);
+    // Validate required fields
+    if (empty($_POST['id']) || empty($_POST['server']) || empty($_POST['entity'])) {
+        wp_send_json_error('Missing required fields');
     }
+
+    $items = get_option('hass_widgets_items', []);
+    $id = sanitize_key($_POST['id']);
+    
+    // Check if ID already exists
+    if (isset($items[$id])) {
+        wp_send_json_error('Item ID already exists');
+    }
+
+    $items[$id] = [
+        'server'    => sanitize_text_field($_POST['server']),
+        'entity'    => sanitize_text_field($_POST['entity']),
+        'attribute' => sanitize_text_field($_POST['attribute'] ?? ''),
+        'cache_time' => intval($_POST['cache_time'] ?? 30)
+];
+    
+    update_option('hass_widgets_items', $items);
+    wp_send_json_success(['id' => $id]);
+}
 
     public function ajax_delete_server() {
         check_ajax_referer('hass_widgets_nonce', 'nonce');
@@ -160,20 +207,51 @@ class HomeAssistantPlugin {
         wp_send_json_success();
     }
 
-    public function ajax_add_widget() {
-        check_ajax_referer('hass_widgets_nonce', 'nonce');
-        if (!current_user_can('manage_options')) wp_send_json_error('Permission denied');
 
-        $widgets = get_option('hass_widgets_widgets', []);
-        $id = sanitize_key($_POST['widget_id'] ?? uniqid('wid_'));
-        $widgets[$id] = [
-            'title' => sanitize_text_field($_POST['widget_title']),
-            'template' => wp_kses_post($_POST['widget_template']),
-            'refresh' => intval($_POST['widget_refresh'] ?? 30)
-        ];
-        update_option('hass_widgets_widgets', $widgets);
-        wp_send_json_success(['id'=>$id]);
+public function ajax_add_widget() {
+    check_ajax_referer('hass_widgets_nonce', 'nonce');
+    if (!current_user_can('manage_options')) wp_send_json_error('Permission denied');
+
+    error_log('Widget data received: ' . print_r($_POST, true)); // Debug
+
+    // Check if we have widget_data (serialized form) or individual fields
+    if (isset($_POST['widget_data'])) {
+        // Parse the serialized form data
+        parse_str($_POST['widget_data'], $form_data);
+        error_log('Parsed form data: ' . print_r($form_data, true)); // Debug
+    } else {
+        // Use individual POST fields directly
+        $form_data = $_POST;
     }
+
+    // Validate required fields with proper fallbacks
+    $widget_title = sanitize_text_field($form_data['widget_title'] ?? '');
+    $widget_template = wp_kses_post($form_data['widget_template'] ?? '');
+    $widget_refresh = intval($form_data['widget_refresh'] ?? 30);
+    
+    // Generate ID if not provided or empty
+    $widget_id = !empty($form_data['widget_id']) ? sanitize_key($form_data['widget_id']) : uniqid('wid_');
+    
+
+    error_log('Generated widget ID: ' . $widget_id); // Debug
+
+    if (empty($widget_title) || empty($widget_template)) {
+        wp_send_json_error('Title and template are required');
+    }
+
+    $widgets = get_option('hass_widgets_widgets', []);
+    $widgets[$widget_id] = [
+        'title' => $widget_title,
+        'template' => $widget_template,
+        'refresh' => $widget_refresh
+    ];
+    
+    error_log('Saving widgets: ' . print_r($widgets, true)); // Debug
+    
+    update_option('hass_widgets_widgets', $widgets);
+    wp_send_json_success(['id' => $widget_id]);
+}
+
 
     public function ajax_delete_widget() {
         check_ajax_referer('hass_widgets_nonce', 'nonce');
@@ -190,29 +268,33 @@ class HomeAssistantPlugin {
         wp_send_json_success($value);
     }
 
-    // ==== Helper: Get Item Value with 30s caching ====
-    public function get_item_value($id) {
-        $cache_key = 'hass_item_' . $id;
-        $cached = get_transient($cache_key);
-        if ($cached !== false) return $cached;
+public function get_item_value($id) {
+    $cache_key = 'hass_item_' . $id;
+    $cached = get_transient($cache_key);
+    if ($cached !== false) return $cached;
 
-        $items = get_option('hass_widgets_items', []);
-        $servers = get_option('hass_widgets_servers', []);
-        if (!isset($items[$id])) return '';
+    $items = get_option('hass_widgets_items', []);
+    $servers = get_option('hass_widgets_servers', []);
+    if (!isset($items[$id])) return '';
 
-        $item = $items[$id];
-        $server = $servers[$item['server']] ?? null;
-        if (!$server) return '';
+    $item = $items[$id];
+    $server = $servers[$item['server']] ?? null;
+    if (!$server) return '';
 
-        $url = rtrim($server['url'], '/') . '/api/states/' . $item['entity'];
-        $args = ['headers'=>['Authorization'=>'Bearer '.$server['token']],'timeout'=>10];
-        $resp = wp_remote_get($url, $args);
-        if (is_wp_error($resp)) return 'Error';
-        $data = json_decode(wp_remote_retrieve_body($resp), true);
-        $value = $item['attribute'] ? ($data['attributes'][$item['attribute']] ?? '') : ($data['state'] ?? '');
-        set_transient($cache_key, $value, 30);
-        return $value;
-    }
+    $url = rtrim($server['url'], '/') . '/api/states/' . $item['entity'];
+    $args = ['headers'=>['Authorization'=>'Bearer '.$server['token']],'timeout'=>10];
+    $resp = wp_remote_get($url, $args);
+    if (is_wp_error($resp)) return 'Error';
+    $data = json_decode(wp_remote_retrieve_body($resp), true);
+    $value = $item['attribute'] ? ($data['attributes'][$item['attribute']] ?? '') : ($data['state'] ?? '');
+    
+    // Use per-item cache time or default to 30 seconds
+    $cache_time = $item['cache_time'] ?? 30;
+    set_transient($cache_key, $value, $cache_time);
+    
+    return $value;
+}
+
 
     // ==== Shortcodes ====
 public function shortcode_widget($atts) {
@@ -289,4 +371,3 @@ public function shortcode_item($atts) {
 
 
 new HomeAssistantPlugin();
-
