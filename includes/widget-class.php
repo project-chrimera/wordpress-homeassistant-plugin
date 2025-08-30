@@ -1,4 +1,4 @@
-\<?php
+<?php
 // includes/widget-class.php
 
 class HASS_Widget extends WP_Widget {
